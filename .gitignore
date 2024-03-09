@@ -1,0 +1,7 @@
+node_modules/*
+.vscode/*
+answer_file/*
+compiled/*
+uploads/*
+result/*
+.env
