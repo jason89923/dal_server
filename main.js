@@ -276,17 +276,31 @@ async function transcode(filename) {
     }
 }
 
+var uploading = false;
+
 app.post('/upload', upload.array('files'), async (req, res) => {
-    const pattern = /^\d{8}_/;
+    uploading = true;
+    const pattern = /^\d{8}_|^補交_/;
     
     for (const file of req.files) {
         const originalname = decodeURIComponent(file.originalname);
         if (!pattern.test(originalname)) {
             res.send(`檔名格式錯誤: ${originalname}，檔名必須以學號開頭`);
             for (const cppfile of req.files) {
-                fs.rm(cppfile['path'], { recursive: true, force: true }, (err) => {});
+                fs.promises.rm(cppfile['path'], { recursive: true, force: true });
             }
+            uploading = false;
             return;
+        }
+
+        else if ( originalname.split('_')[0] === "補交") {
+            for ( const cppfile of req.files) {
+                const cppfilename = decodeURIComponent(cppfile['originalname']);
+                if ( cppfilename === originalname ) {
+                    fs.promises.rm(cppfile['path'], { recursive: true, force: true });
+                    req.files = req.files.filter(file => decodeURIComponent(file.originalname) !== originalname);
+                }
+            }
         }
     }
 
@@ -362,7 +376,7 @@ app.post('/upload', upload.array('files'), async (req, res) => {
     console.log('執行完成')
 
     res.send(upload_id);
-
+    uploading = false;
 });
 
 // app.post('/upload_complete', async (req, res) => {
@@ -699,6 +713,11 @@ async function cal_PR(filename) {
 }
 
 app.post('/hw_upload', async (req, res) => {
+    if (uploading) {
+        res.send('檔案上傳中，請稍後再試');
+        return;
+    }
+    
     const target_hw = req.body.target_hw;
     const command_collection = client.db('dal').collection('command_file');
     const upload_collection = client.db('dal').collection('upload_log');
@@ -892,6 +911,14 @@ app.post('/downloadcpp', async (req, res) => {
 
         const folder_name = studentId;
         const zipPath = path.join('temp', `${studentId}.zip`);
+
+        try {
+            await fs.promises.mkdir( 'temp' ) ;
+        }
+        catch (err) {
+            if (err.code !== 'EEXIST') throw err;
+        }
+
         const output = fs.createWriteStream(zipPath);
         const archive = archiver('zip', {
             zlib: { level: 9 } // Sets the compression level.
