@@ -7,6 +7,9 @@ const { exec } = require('child_process');
 const { set } = require('lodash');
 const AsyncQueue = require('./AsyncQueue');
 
+const Redis = require('ioredis');
+const redis = new Redis(process.env.REDIS_URI);
+
 const client = new MongoClient(process.env.MONGODB_URI);
 
 async function read_and_upload_dependent_files(dir, homework_name) {
@@ -106,9 +109,11 @@ async function execute(input_dir, homework_name) {
                     // 執行程式
                     exec('cd ' + path.join('execute', current_execute_folder) + ' && timeout 10s firejail --quiet ./program < in.txt', { maxBuffer: 10240 * 1024 }, async (error, stdout, stderr) => {
                         if (error) {
-                            console.log('error: ' + error.message);
+                            console.log('error: ' + error.message + ' - Timestamp: ' + new Date().toISOString());
                             // 刪除資料夾
-                            await fs.promises.rm(path.join('execute', current_execute_folder), { recursive: true });
+                            await fs.promises.rm(path.join('execute', current_execute_folder), { recursive: true, force: true });
+                            await redis.set(`current_teacher_upload_fail`, 'true', 'EX', 60 * 60 * 24);
+                            resolve();
                             return;
                         }
 
@@ -146,7 +151,7 @@ async function execute(input_dir, homework_name) {
                         }
 
                         // 刪除資料夾
-                        await fs.promises.rm(path.join('execute', current_execute_folder), { recursive: true });
+                        await fs.promises.rm(path.join('execute', current_execute_folder), { recursive: true, force: true });
                         resolve()
                     });
                 });
@@ -167,7 +172,7 @@ async function check_file_existence(file_path, homework_name) {
 
     // 分類檔案
     for (const file of all_files) {
-        if (/^input\d{3}\.txt$/.test(file)) {
+        if (/^[a-z]{5}\d{3}\.[a-z]{3}$/.test(file)) {
             input_files.push(file);
         } else if (/^COM_(DEMO[a-z]*|QUIZ[a-z]*)\.json$/.test(file)) {
             const cpp_name = path.parse(file).name.split('_')[1]
@@ -197,7 +202,6 @@ async function upload(homework_name) {
     const asyncQueue = new AsyncQueue();
     const all_promise = await execute(input_dir, homework_name);
     await asyncQueue.processQueue(all_promise);
-    console.log('upload success');
 }
 
 

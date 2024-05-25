@@ -2,6 +2,7 @@ node_modules/*
 .vscode/*
 answer_file/*
 compiled/*
+execute/*
 uploads/*
 result/*
 .env

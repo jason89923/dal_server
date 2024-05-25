@@ -23,7 +23,7 @@ const diff_match_patch = require('diff-match-patch');
 const dmp = new diff_match_patch();
 
 const Redis = require('ioredis');
-const redis = new Redis();
+const redis = new Redis(process.env.REDIS_URI);
 
 const hljs = require('highlight.js');
 
@@ -169,28 +169,36 @@ app.post('/delete_batch', async (req, res) => {
 
 app.post('/code', async (req, res) => {
     const filename = req.body.filename;
-    const data = await fs.promises.readFile(path.join('uploads', filename));
-    const content = data.toString();
+    try {
+        const data = await fs.promises.readFile(path.join('uploads', filename));
+        const content = data.toString();
 
-    // 確定使用highlight.js進行語法高亮
-    const result = hljs.highlight(content, { language: 'cpp' }).value;
+        // 使用highlight.js進行語法高亮
+        const result = hljs.highlight(content, { language: 'cpp' }).value;
 
-    // 包含highlight.js的CSS樣式
-    // 這裡使用的是"default"風格，你可以更換為其他風格
-    const style = '<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/10.7.2/styles/vs2015.min.css">';
+        // 直接讀取CSS檔案
+        const styleData = await fs.promises.readFile(path.join('src', 'vs2015.min.css'));
+        const style = `<style>${styleData.toString()}</style>`;
 
-    // 將CSS樣式和高亮後的代碼嵌入到HTML中
-    const scripts = `
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/10.7.2/highlight.min.js"></script>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlightjs-line-numbers.js/2.8.0/highlightjs-line-numbers.min.js"></script>
-    <script>hljs.highlightAll(); hljs.initLineNumbersOnLoad();</script>
-    `;
+        // 直接讀取JavaScript檔案
+        const scriptData1 = await fs.promises.readFile(path.join('src', 'highlight.min.js'));
+        const scriptData2 = await fs.promises.readFile(path.join('src', 'highlightjs-line-numbers.min.js'));
+        const scripts = `
+        <script>${scriptData1.toString()}</script>
+        <script>${scriptData2.toString()}</script>
+        <script>hljs.highlightAll(); hljs.initLineNumbersOnLoad();</script>
+        `;
 
-    // 將CSS樣式、高亮後的代碼和腳本嵌入到HTML中
-    const html = `<html><head>${style}</head><body><pre><code class="hljs">${result}</code></pre>${scripts}</body></html>`;
+        // 將CSS樣式、高亮後的代碼和腳本嵌入到HTML中
+        const html = `<html><head>${style}</head><body><pre><code class="hljs">${result}</code></pre>${scripts}</body></html>`;
 
-    res.send(html);
+        res.send(html);
+    } catch (err) {
+        console.log(err);
+        res.send(err.message);
+    }
 });
+
 
 app.post('/diff', async (req, res) => {
     try {
@@ -234,12 +242,14 @@ app.post('/diff', async (req, res) => {
             return;
         }
     
-        // 計算時間
-        const { performance } = require('perf_hooks');
-        const start = performance.now();
-        const diff = result.diff_result[0].diff_result;
-        console.log('Time taken:', performance.now() - start, 'ms');
-        var html = dmp.diff_prettyHtml(diff);
+        var html = "";
+        for ( const output_file of result.diff_result ) {
+            const diff = output_file.diff_result;
+            html += `<h1 style=\"font-size: 30px;\"><li>${output_file.item}:</li></h1><br>` + dmp.diff_prettyHtml(diff) + "<br><br>"
+        } // for()
+            
+        // const diff = result.diff_result[0].diff_result;
+        // var html = dmp.diff_prettyHtml(diff);
     
         html = html.replaceAll('background', 'color'); // 改字體顏色
         html = html.replaceAll('#e6ffe6', '#6eff6e'); // 綠色
@@ -253,9 +263,9 @@ app.post('/diff', async (req, res) => {
             var error_message = "time limit exceeded";
         } // else if()
     
-        const result_html = hljs.highlight(error_message, { language: 'bash' }).value;
+        const error_message_html = hljs.highlight(error_message, { language: 'bash' }).value;
         const style = '<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/10.7.2/styles/vs2015.min.css">';
-        html = `<html><head>${style}</head>` + `<h1 style=\"font-size: 30px;\">輸出比對:</h1><br>` + html + "<br><br>" + `<pre><code>${result_html}</code></pre>`;
+        html = `<html><head>${style}</head>` + html + `<pre><code>${error_message_html}</code></pre>`;
     
         res.send(html);
         return;
@@ -379,50 +389,6 @@ app.post('/upload', upload.array('files'), async (req, res) => {
     uploading = false;
 });
 
-// app.post('/upload_complete', async (req, res) => {
-//     if (!(req.sessionID in upload_record)) {
-//         res.send('請先上傳檔案\n');
-//         return;
-//     }
-
-
-//     const all_cpp = await collection.find({ upload_id: upload_id }).toArray();
-
-//     const all_cpp_promise = []
-
-//     all_cpp.forEach(exe => {
-//         const filename = exe.filename; // 從資料庫找出cpp名稱
-//         const original = exe.originalname; // 從資料庫找出原始檔名
-
-//         all_cpp_promise.push(() => compile(filename, original))
-//     });
-
-//     console.log('開始編譯')
-//     await asyncQueue.processQueue(all_cpp_promise);
-//     console.log('編譯完成')
-
-//     const all_exe = await compiled_collection.find({ filename: { $in: all_cpp.map(item => item.filename) }, state: 'success' }).toArray();
-//     const all_exe_filename = all_exe.map(item => item.filename);
-//     const compiled_exe = all_cpp.filter(cpp => all_exe_filename.includes(cpp.filename))
-
-//     var all_exe_promise = []
-
-//     for (const exe of compiled_exe) {
-//         const filename = exe.filename; // 從資料庫找出cpp名稱
-//         const homework = exe.homework; // 從資料庫找出作業名稱 (第幾次作業)
-//         const type = exe.type; // 從資料庫找出題目類型 (作業或挑戰)
-//         const result = await execute(filename, homework, type)
-//         all_exe_promise = all_exe_promise.concat(result);
-//     }
-
-//     console.log('開始執行')
-//     await asyncQueue.processQueue(all_exe_promise);
-//     console.log('執行完成')
-
-//     res.send(upload_id);
-
-// });
-
 function compile(filename, originalname, upload_folder = 'uploads', compile_folder = 'compiled') {
     return new Promise((resolve, reject) => {
         const compiled_collection = client.db('dal').collection('compiled_log');
@@ -543,14 +509,15 @@ async function execute(filename, homework, type, compile_folder = 'compiled', ex
 
                         catch (err) {
                             // 沒有的話就是null
-                            var content = null;
+                            var content = `缺少: ${generated_file.filename}`;
                         }
 
                         output_file.push({ filename: generated_file.filename, content: content });
 
                         // 比對輸出結果
                         if (content !== null) {
-                            diff_result_list.push({ item: generated_file.filename, diff: cal_diff(content, generated_file.content) });
+                            const { diff_result, num_of_diff } = await cal_diff(content, generated_file.content);
+                            diff_result_list.push({ item: generated_file.filename, diff: num_of_diff, diff_result: diff_result });
                         } else {
                             diff_result_list.push({ item: generated_file.filename, diff: -1 });
                         }
@@ -677,26 +644,40 @@ async function cal_PR(filename) {
             total_len += ans.length; // 計算範例程式stdout的長度
             ans_len += ans.length;
             if (item.ans_file) {
-                var ans_file = item.ans_file;
-                ans_file = ans_file.replaceAll(/\s/g, '');
-                total_len += ans_file.length; // 如果有檔案，就加上檔案的長度
-                ans_len += ans_file.length;
-            } // if()
+                for (const ans_file of item.ans_file) {
+                    const ans_file_without_whitespace = ans_file.content.replaceAll(/\s/g, '');
+                    total_len += ans_file_without_whitespace.length; // 如果有檔案，就加上檔案的長度
+                    ans_len += ans_file_without_whitespace.length;
+                }
+            }
 
             if (item.diff_sum !== "-1") {
                 // const diff_patch = await cal_diff(item.stdout, item.ans);
                 // error_len += diff_patch.num_of_diff;
-                const diff_patch = levenshtein.get(item.stdout, item.ans);
+                var diff_patch = levenshtein.get(item.stdout, item.ans);
                 error_len += diff_patch;
                 output_len += diff_patch;
 
                 if (item.output_file) {
                     // diff_patch = await cal_diff(item.output_file, item.ans_file);
                     // error_len += diff_patch.num_of_diff;
-                    diff_patch = levenshtein.get(item.output_file, item.ans_file);
-                    error_len += diff_patch;
-                    output_len += diff_patch;
+                    for ( const ans_file of item.ans_file ) {
+                        try {
+                            const output_file = item.output_file.find(element => element.filename === ans_file.filename);
+                            diff_patch = levenshtein.get(ans_file.content, output_file.content);
+                            error_len += diff_patch;
+                            output_len += diff_patch;
+                        }
+
+                        catch (err) {
+                            console.log("Error: ", err);
+                        }
+
+                        
+                    } // for()
+
                 } // if()
+
             } // if()
 
             await execute_collection.updateOne({ filename: filename, type: item.type, test_num: item.test_num }, { $set: { percentage: ((output_len / ans_len) * 100).toFixed(2) } });
@@ -734,7 +715,7 @@ app.post('/hw_upload', async (req, res) => {
         let types = item.types;
         const uploadResults = await upload_collection.aggregate([
             { $match: { homework: homework, type: { $in: types } } },
-            { $group: { _id: { type: "$type", upload_id: "$upload_id" }, upload_students: { $addToSet: { upload_student: "$upload_student", filename: "$filename", upload_time: "$uploadTime" } } } },
+            { $group: { _id: { type: "$type", upload_id: "$upload_id" }, upload_students: { $addToSet: { upload_student: "$upload_student", filename: "$filename", upload_time: "$uploadTime", onTime: "$onTime" } } } },
             { $unwind: "$upload_students" },
             { $sort: { "_id.type": 1, "_id.upload_id": -1 } }
         ]).toArray();
@@ -750,7 +731,7 @@ app.post('/hw_upload', async (req, res) => {
             if (await redis.get(`upload_tag:${upload_id}`) === null) {
                 const upload_tag_result = await upload_tag_collection.findOne({ upload_id: upload_id });
                 var upload_tag = upload_tag_result !== null ? upload_tag_result.tag : "";
-                await redis.set(`upload_tag:${upload_id}`, upload_tag, 'EX', 60 * 60 * 24);
+                await redis.set(`upload_tag:${upload_id}`, upload_tag, 'EX', 60 * 60 * 24 * 7);
             } else {
                 var upload_tag = await redis.get(`upload_tag:${upload_id}`);
             }
@@ -760,7 +741,7 @@ app.post('/hw_upload', async (req, res) => {
             if (await redis.get(`state:${filename}`) === null) {
                 var state_list = await getState(filename);
                 state = state_list;
-                await redis.set(`state:${filename}`, JSON.stringify(state_list), 'EX', 60 * 60 * 24);
+                await redis.set(`state:${filename}`, JSON.stringify(state_list), 'EX', 60 * 60 * 24 * 7);
             } else {
                 var state_list = await redis.get(`state:${filename}`);
                 state_list = JSON.parse(state_list);
@@ -771,7 +752,7 @@ app.post('/hw_upload', async (req, res) => {
             if (await redis.get(`PR:${filename}`) === null) {
                 var results = await cal_PR(filename);
                 results = results.toFixed(2);
-                await redis.set(`PR:${filename}`, results, 'EX', 60 * 60 * 24);
+                await redis.set(`PR:${filename}`, results, 'EX', 60 * 60 * 24 * 7);
             } else {
                 var results = await redis.get(`PR:${filename}`);
             }
@@ -805,7 +786,7 @@ app.post('/hw_upload', async (req, res) => {
                     level = '2';
                 } // else()
 
-                await redis.set(`level:${filename}`, level, 'EX', 60 * 60 * 24);
+                await redis.set(`level:${filename}`, level, 'EX', 60 * 60 * 24 * 7);
             } else {
                 var level = await redis.get(`level:${filename}`);
             }
@@ -854,7 +835,7 @@ const standard_answer_storage = multer.diskStorage({
 const standard_answer_upload = multer({ storage: standard_answer_storage });
 
 
-app.post('/upload_standard_answer', standard_answer_upload.array('files', 20), async (req, res) => {
+app.post('/upload_standard_answer', standard_answer_upload.array('files', 50), async (req, res) => {
     const homeworkName = req.body.homeworkName;
     const path_to_dir = path.join('answer_file', homeworkName);
     for (const file of req.files) {
@@ -891,13 +872,23 @@ app.post('/upload_standard_answer', standard_answer_upload.array('files', 20), a
     // 刪掉upload
     await fs.promises.rm(path.join('answer_file', 'upload'), { recursive: true, force: true });
 
-    try {
-        await teacher_upload.upload(homeworkName);
+    await redis.set(`current_teacher_upload_fail`, 'false', 'EX', 60 * 60 * 24 * 7);
+    await teacher_upload.upload(homeworkName);
+    if (await redis.get(`current_teacher_upload_fail`) === 'true') {
+        await fs.promises.rm(path_to_dir, { recursive: true, force: true });
+
+        const dependance_file_collection = client.db('dal').collection('dependance_file');
+        const command_collection = client.db('dal').collection('command_file');
+    
+        await dependance_file_collection.deleteMany({ homework_name: homeworkName });
+        await command_collection.deleteMany({ homework: homeworkName });
+
+        res.send('範例程式執行錯誤，可能缺少input檔，上傳失敗');
+    } else {
         res.send('upload standard answer complete');
     }
-    catch (err) {
-        res.send(err.message);
-    }
+
+    await redis.del(`current_teacher_upload_fail`);
 });
 
 app.post('/downloadcpp', async (req, res) => {
@@ -997,7 +988,6 @@ app.post('/downloadsamplecode', (req, res) => {
         res.send(err.message + '\n');
     }
 });
-
 
 app.listen(port, () => {
     console.log(`Server is running on http://localhost:${port}`);
