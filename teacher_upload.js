@@ -15,10 +15,16 @@ const client = new MongoClient(process.env.MONGODB_URI);
 async function read_and_upload_dependent_files(dir, homework_name) {
     try {
         const files = await fs.promises.readdir(path.join(dir, homework_name));
-        const input_files = files.filter(file => file.startsWith('input'));
+        const input_files = files.filter(file => file.startsWith('input') || file.startsWith('pairs'));
 
         for (const file of input_files) {
-            const data = await fs.promises.readFile(path.join(dir, homework_name, file));
+            let data;
+            if (file.endsWith('bin')) {
+                data = await fs.promises.readFile(path.join(dir, homework_name, file), { encoding: 'binary' });
+            } else {
+                data = await fs.promises.readFile(path.join(dir, homework_name, file));
+            }
+
             const content = data.toString();
 
             const collection = client.db('dal').collection('dependance_file');
@@ -39,7 +45,7 @@ async function read_and_upload_command(dir, homework_name) {
             const content = JSON.parse(data)
 
             const collection = client.db('dal').collection('command_file');
-            
+
             const filenameWithoutExtension = path.parse(file).name;
             for (const item of content) {
                 const test_unit = item.test_unit.map(str => str.replace(/\s+/g, '\n')).join('\n') + '\n';
@@ -52,6 +58,14 @@ async function read_and_upload_command(dir, homework_name) {
     }
 }
 
+function to_ms(time) {
+    const time_regex = /(\d+)m(\d+\.\d+)s/;
+    const time_match = time.match(time_regex);
+    const minutes = parseInt(time_match[1]);
+    const seconds = parseFloat(time_match[2]);
+    const time_in_ms = (minutes * 60 + seconds) * 1000;
+    return time_in_ms;
+}
 
 async function execute(input_dir, homework_name) {
     const dependance_file_collection = client.db('dal').collection('dependance_file');
@@ -91,11 +105,16 @@ async function execute(input_dir, homework_name) {
                 const dependance_results = await dependance_file_collection.find({ homework_name: homework_name }).toArray();
 
                 for (const dependance_result of dependance_results) {
-                    // 把附檔寫入到資料夾中 
-                    await fs.promises.writeFile(path.join('execute', current_execute_folder, dependance_result.filename), dependance_result.content);
+                    // 把附檔寫入到資料夾中
+                    if (dependance_result.filename.endsWith('bin')) {
+                        await fs.promises.writeFile(path.join('execute', current_execute_folder, dependance_result.filename), dependance_result.content, { encoding: 'binary' });
+                    } else {
+                        await fs.promises.writeFile(path.join('execute', current_execute_folder, dependance_result.filename), dependance_result.content);
+                    }
                 }
 
                 // 編譯程式
+                console.log('Timestamp: ' + new Date().toISOString() + ' cd ' + path.join('execute', current_execute_folder) + ' && g++ program.cpp -o program');
                 exec('cd ' + path.join('execute', current_execute_folder) + ' && g++ program.cpp -o program', async (error, stdout, stderr) => {
                     if (error) {
                         console.log('error: ' + error.message);
@@ -107,7 +126,8 @@ async function execute(input_dir, homework_name) {
                     }
 
                     // 執行程式
-                    exec('cd ' + path.join('execute', current_execute_folder) + ' && timeout 10s firejail --quiet ./program < in.txt', { maxBuffer: 10240 * 1024 }, async (error, stdout, stderr) => {
+                    console.log('Timestamp: ' + new Date().toISOString() + ' cd ' + path.join('execute', current_execute_folder) + ' && timeout 300s firejail --quiet /bin/bash -c "{ time ./program < in.txt; } 2> time.txt"');
+                    exec('cd ' + path.join('execute', current_execute_folder) + ' && timeout 300s firejail --quiet /bin/bash -c "{ time ./program < in.txt; } 2> time.txt"', { maxBuffer: 10240 * 1024 }, async (error, stdout, stderr) => {
                         if (error) {
                             console.log('error: ' + error.message + ' - Timestamp: ' + new Date().toISOString());
                             // 刪除資料夾
@@ -123,7 +143,7 @@ async function execute(input_dir, homework_name) {
                         // 列出所有附檔的檔案名稱
                         const dependance_file_names = set(dependance_results.map(result => result.filename));
                         // 找出程式生成的檔案
-                        const all_txt_files = (await fs.promises.readdir(path.join('execute', current_execute_folder))).filter(file => file.endsWith('.txt') && file !== 'in.txt' && !dependance_file_names.includes(file));
+                        const all_txt_files = (await fs.promises.readdir(path.join('execute', current_execute_folder))).filter(file => (file.endsWith('.txt') || file.endsWith('.cnt') || file.endsWith('.adj')) && file !== 'in.txt' && file !== 'time.txt' && !dependance_file_names.includes(file));
 
                         // 把程式生成的檔案寫入到資料庫中
                         for (const output_file of all_txt_files) {
@@ -139,9 +159,29 @@ async function execute(input_dir, homework_name) {
                                 content: content
                             };
 
+                            const time_txt = await fs.promises.readFile(path.join('execute', current_execute_folder, 'time.txt'), 'utf-8');
+
+                            const regex = /real\s*(\d+m\d+\.\d+s)\nuser\s*(\d+m\d+\.\d+s)\nsys\s*(\d+m\d+\.\d+s)/;
+                            const match = time_txt.match(regex);
+                            const real_time = to_ms(match[1]);
+                            const user_time = to_ms(match[2]);
+                            const sys_time = to_ms(match[3]);
+
                             // 寫入資料庫
-                            await command_collection.updateOne({ homework: homework_name, type: pure_cpp_file_name, test_num: test_num },
-                                { $push: { generated_files: information } }, (err, result) => {
+                            await command_collection.updateOne({
+                                homework: homework_name,
+                                type: pure_cpp_file_name,
+                                test_num: test_num,
+                            },
+                                {
+                                    $push: { generated_files: information },
+                                    $set: {
+                                        cpu_time: user_time + sys_time,
+                                        real_time: real_time,
+                                        user_time: user_time,
+                                        sys_time: sys_time,
+                                    }
+                                }, (err, result) => {
                                     if (err) {
                                         console.log(err);
                                     } else {
@@ -190,7 +230,7 @@ async function check_file_existence(file_path, homework_name) {
 
 async function upload(homework_name) {
     const input_dir = 'answer_file'
-    
+
     const dependance_file_collection = client.db('dal').collection('dependance_file');
     const command_collection = client.db('dal').collection('command_file');
 

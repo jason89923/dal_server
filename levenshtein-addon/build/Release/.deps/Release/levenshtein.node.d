@@ -1,0 +1,1 @@
+cmd_Release/levenshtein.node := ln -f "Release/obj.target/levenshtein.node" "Release/levenshtein.node" 2>/dev/null || (rm -rf "Release/levenshtein.node" && cp -af "Release/obj.target/levenshtein.node" "Release/levenshtein.node")
