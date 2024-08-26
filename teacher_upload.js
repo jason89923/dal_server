@@ -50,6 +50,11 @@ async function read_and_upload_command(dir, homework_name) {
             for (const item of content) {
                 const test_unit = item.test_unit.map(str => str.replace(/\s+/g, '\n')).join('\n') + '\n';
                 await collection.updateOne({ homework: homework_name, type: filenameWithoutExtension.split('_')[1], test_num: item.test_num.toString(), description: item.description }, { $set: { content: test_unit, test_unit_object: JSON.stringify(item.test_unit) } }, { upsert: true });
+                if (item.predecessor !== undefined) {
+                    for (const predecessor of item.predecessor) {
+                        await collection.updateOne({ homework: homework_name, type: filenameWithoutExtension.split('_')[1], test_num: predecessor.toString() }, { $push: {relation_edge: item.test_num.toString()} });
+                    }
+                }
             }
             // await collection.updateOne({ homework: homework_name, type: filenameWithoutExtension.split('_')[1], test_num: filenameWithoutExtension.split('_')[2], filename: file }, { $set: { content: content } }, { upsert: true });
         }
@@ -127,9 +132,9 @@ async function execute(input_dir, homework_name) {
 
                     // 執行程式
                     console.log('Timestamp: ' + new Date().toISOString() + ' cd ' + path.join('execute', current_execute_folder) + ' && timeout 300s firejail --quiet /bin/bash -c "{ time ./program < in.txt; } 2> time.txt"');
-                    exec('cd ' + path.join('execute', current_execute_folder) + ' && timeout 300s firejail --quiet /bin/bash -c "{ time ./program < in.txt; } 2> time.txt"', { maxBuffer: 10240 * 1024 }, async (error, stdout, stderr) => {
+                    exec('cd ' + path.join('execute', current_execute_folder) + ' && timeout 300s firejail --quiet /bin/bash -c "ulimit -s 16384 && { time ./program < in.txt; } 2> time.txt"', { maxBuffer: 10240 * 1024 }, async (error, stdout, stderr) => {
                         if (error) {
-                            console.log('error: ' + error.message + ' - Timestamp: ' + new Date().toISOString());
+                            console.error('test num ' + test_num + ' error: ' + error.message + ' - Timestamp: ' + new Date().toISOString());
                             // 刪除資料夾
                             await fs.promises.rm(path.join('execute', current_execute_folder), { recursive: true, force: true });
                             await redis.set(`current_teacher_upload_fail`, 'true', 'EX', 60 * 60 * 24);
@@ -145,6 +150,37 @@ async function execute(input_dir, homework_name) {
                         // 找出程式生成的檔案
                         const all_txt_files = (await fs.promises.readdir(path.join('execute', current_execute_folder))).filter(file => (file.endsWith('.txt') || file.endsWith('.cnt') || file.endsWith('.adj')) && file !== 'in.txt' && file !== 'time.txt' && !dependance_file_names.includes(file));
 
+
+                        // 讀取執行時間
+                        const time_txt = await fs.promises.readFile(path.join('execute', current_execute_folder, 'time.txt'), 'utf-8');
+
+                        const regex = /real\s*(\d+m\d+\.\d+s)\nuser\s*(\d+m\d+\.\d+s)\nsys\s*(\d+m\d+\.\d+s)/;
+                        const match = time_txt.match(regex);
+                        const real_time = to_ms(match[1]);
+                        const user_time = to_ms(match[2]);
+                        const sys_time = to_ms(match[3]);
+
+                        await command_collection.updateOne({
+                            homework: homework_name,
+                            type: pure_cpp_file_name,
+                            test_num: test_num,
+                        },
+                            {
+                                $set: {
+                                    cpu_time: user_time + sys_time,
+                                    real_time: real_time,
+                                    user_time: user_time,
+                                    sys_time: sys_time,
+                                }
+                            }, (err, result) => {
+                                if (err) {
+                                    console.log(err);
+                                } else {
+                                    console.log(result);
+                                }
+                            });
+
+
                         // 把程式生成的檔案寫入到資料庫中
                         for (const output_file of all_txt_files) {
                             // 讀取檔案
@@ -159,14 +195,6 @@ async function execute(input_dir, homework_name) {
                                 content: content
                             };
 
-                            const time_txt = await fs.promises.readFile(path.join('execute', current_execute_folder, 'time.txt'), 'utf-8');
-
-                            const regex = /real\s*(\d+m\d+\.\d+s)\nuser\s*(\d+m\d+\.\d+s)\nsys\s*(\d+m\d+\.\d+s)/;
-                            const match = time_txt.match(regex);
-                            const real_time = to_ms(match[1]);
-                            const user_time = to_ms(match[2]);
-                            const sys_time = to_ms(match[3]);
-
                             // 寫入資料庫
                             await command_collection.updateOne({
                                 homework: homework_name,
@@ -174,13 +202,7 @@ async function execute(input_dir, homework_name) {
                                 test_num: test_num,
                             },
                                 {
-                                    $push: { generated_files: information },
-                                    $set: {
-                                        cpu_time: user_time + sys_time,
-                                        real_time: real_time,
-                                        user_time: user_time,
-                                        sys_time: sys_time,
-                                    }
+                                    $push: { generated_files: information }
                                 }, (err, result) => {
                                     if (err) {
                                         console.log(err);

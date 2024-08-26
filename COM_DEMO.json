@@ -1,0 +1,473 @@
+[
+    {
+        "test_num": 1,
+        "description": "任務1單元測試-1",
+        "hidden": false,
+        "test_unit": [
+            "1 201",
+            "0"
+        ]
+    },
+    {
+        "test_num": 2,
+        "description": "任務1單元測試-2",
+        "hidden": false,
+        "test_unit": [
+            "1 202",
+            "0"
+        ]
+    },
+    {
+        "test_num": 3,
+        "description": "任務1單元測試-3",
+        "hidden": false,
+        "predecessor": [
+            1
+		],
+        "test_unit": [
+            "1 203",
+            "0"
+        ]
+    },
+    {
+        "test_num": 4,
+        "description": "任務1較大檔案測試-1",
+        "hidden": false,
+        "predecessor": [
+            2
+		],
+        "test_unit": [
+            "1 204",
+            "0"
+        ]
+    },
+    {
+        "test_num": 5,
+        "description": "任務1整體測試-1",
+        "hidden": false,
+        "predecessor": [
+            2,
+            3
+		],
+        "test_unit": [
+            "1 201",
+            "1 202",
+            "1 203",
+            "0"
+        ]
+    },
+    {
+        "test_num": 6,
+        "description": "任務1防呆測試-1",
+        "hidden": false,
+        "test_unit": [
+            "1 101 0",
+            "0"
+        ]
+    },
+    {
+        "test_num": 7,
+        "description": "任務1防呆測試-2",
+        "hidden": false,
+        "predecessor": [
+            6
+		],
+        "test_unit": [
+            "1 99 a + 0",
+            "0"
+        ]
+    },
+    {
+        "test_num": 8,
+        "description": "任務1防呆測試-3",
+        "hidden": false,
+        "predecessor": [
+            2,
+			7
+		],
+        "test_unit": [
+            "1 102 0",
+            "1 202",
+            "0"
+        ]
+    },
+    {
+        "test_num": 9,
+        "description": "任務2單元測試-1",
+        "hidden": false,
+        "test_unit": [
+            "2 201",
+            "0"
+        ]
+    },
+    {
+        "test_num": 10,
+        "description": "任務2單元測試-2",
+        "hidden": false,
+        "test_unit": [
+            "2 202",
+            "0"
+        ]
+    },
+    {
+        "test_num": 11,
+        "description": "任務2單元測試-3",
+        "hidden": false,
+        "predecessor": [
+            9
+		],
+        "test_unit": [
+            "2 203",
+            "0"
+        ]
+    },
+    {
+        "test_num": 12,
+        "description": "任務2較大檔案測試-1",
+        "hidden": false,
+        "predecessor": [
+            10
+		],
+        "test_unit": [
+            "2 204",
+            "0"
+        ]
+    },
+    {
+        "test_num": 13,
+        "description": "任務2整體測試-1",
+        "hidden": false,
+        "predecessor": [
+            10,
+			11
+		],
+        "test_unit": [
+            "2 201",
+            "2 202",
+            "2 203",
+            "0"
+        ]
+    },
+    {
+        "test_num": 14,
+        "description": "任務2防呆測試-1",
+        "hidden": false,
+        "test_unit": [
+            "2 2001 1201 0",
+            "0"
+        ]
+    },
+    {
+        "test_num": 15,
+        "description": "任務2防呆測試-2",
+        "hidden": false,
+        "predecessor": [
+			14
+		],
+        "test_unit": [
+            "2 200 input2 20. 0",
+            "0"
+        ]
+    },
+    {
+        "test_num": 16,
+        "description": "任務2防呆測試-3",
+        "hidden": false,
+        "predecessor": [
+            9,
+			15
+		],
+        "test_unit": [
+            "2 299 0",
+            "2 201",
+            "0"
+        ]
+    },
+    {
+        "test_num": 17,
+        "description": "任務3單元測試-1",
+        "hidden": false,
+        "test_unit": [
+            "3 201",
+            "0"
+        ]
+    },
+    {
+        "test_num": 18,
+        "description": "任務3單元測試-2",
+        "hidden": false,
+        "test_unit": [
+            "3 202",
+            "0"
+        ]
+    },
+    {
+        "test_num": 19,
+        "description": "任務3單元測試-3",
+        "hidden": false,
+        "predecessor": [
+			17
+		],
+        "test_unit": [
+            "3 203",
+            "0"
+        ]
+    },
+    {
+        "test_num": 20,
+        "description": "任務3較大檔案測試-1",
+        "hidden": false,
+        "predecessor": [
+            18
+		],
+        "test_unit": [
+            "3 204",
+            "0"
+        ]
+    },
+    {
+        "test_num": 21,
+        "description": "任務3整體測試-1",
+        "hidden": false,
+        "predecessor": [
+            18,
+			19
+		],
+        "test_unit": [
+            "3 201",
+            "3 202",
+            "3 203",
+            "0"
+        ]
+    },
+    {
+        "test_num": 22,
+        "description": "任務3防呆測試-1",
+        "hidden": false,
+        "test_unit": [
+            "3 301 0",
+            "0"
+        ]
+    },
+    {
+        "test_num": 23,
+        "description": "任務3防呆測試-2",
+        "hidden": false,
+        "predecessor": [
+            22
+		],
+        "test_unit": [
+            "3 z 100 z z z z z 0",
+            "0"
+        ]
+    },
+    {
+        "test_num": 24,
+        "description": "任務3防呆測試-3",
+        "hidden": false,
+        "predecessor": [
+            17,
+			23
+		],
+        "test_unit": [
+            "3 input abc 0",
+            "3 201",
+            "0"
+        ]
+    },
+    {
+        "test_num": 25,
+        "description": "任務1~2聯合測試-1",
+        "hidden": false,
+        "predecessor": [
+            1,
+			9
+		],
+		"test_unit": [
+            "1 201",
+            "2 201",
+            "0"
+        ]
+    },
+    {
+        "test_num": 26,
+        "description": "任務1~2聯合測試-2",
+        "hidden": false,
+        "predecessor": [
+            2,
+			10
+		],
+        "test_unit": [
+            "1 202",
+            "2 202",
+            "0"
+        ]
+    },
+    {
+        "test_num": 27,
+        "description": "任務1~3聯合測試-1",
+        "hidden": false,
+        "predecessor": [
+            3,
+			17
+		],
+        "test_unit": [
+            "1 203",
+            "3 201",
+            "0"
+        ]
+    },
+    {
+        "test_num": 28,
+        "description": "任務1~3聯合測試-2",
+        "hidden": false,
+        "predecessor": [
+            4,
+			18
+		],
+        "test_unit": [
+            "1 204",
+            "3 202",
+            "0"
+        ]
+    },
+    {
+        "test_num": 29,
+        "description": "任務2~3聯合測試-1",
+        "hidden": false,
+        "predecessor": [
+            11,
+			19
+		],
+		"test_unit": [
+            "2 203",
+            "3 203",
+            "0"
+        ]
+    },
+    {
+        "test_num": 30,
+        "description": "任務2~3較大檔案聯合測試-2",
+        "hidden": false,
+        "predecessor": [
+            12,
+			20
+		],
+        "test_unit": [
+            "2 204",
+            "3 204",
+            "0"
+        ]
+    },
+    {
+        "test_num": 31,
+        "description": "任務1-3聯合測試-1",
+        "hidden": false,
+        "predecessor": [
+            26,
+			28
+		],
+        "test_unit": [
+            "1 202",
+            "2 202",
+            "3 202",
+            "0"
+        ]
+    },
+    {
+        "test_num": 32,
+        "description": "任務1-3聯合測試-2",
+        "hidden": false,
+        "predecessor": [
+            27,
+			29
+		],
+        "test_unit": [
+            "1 203",
+            "2 203",
+            "3 203",
+            "0"
+        ]
+    },
+    {
+        "test_num": 33,
+        "description": "任務1-3較大檔案聯合測試-1",
+        "hidden": false,
+        "predecessor": [
+            4,
+			12,
+			20
+		],
+        "test_unit": [
+            "1 204",
+            "2 204",
+            "3 204",
+            "0"
+        ]
+    },
+    {
+        "test_num": 34,
+        "description": "任務1-3綜合防呆測試-1",
+        "hidden": false,
+        "predecessor": [
+            6,
+			14,
+			22,
+			5,
+			13,
+			21
+		],
+        "test_unit": [
+            "1 901 0",
+            "1 203",
+            "2 2024 2011 0",
+            "2 203",
+            "3 3001 0",
+            "3 203",
+            "0"
+        ]
+    },
+    {
+        "test_num": 35,
+        "description": "任務1-3綜合防呆測試-2",
+        "hidden": false,
+        "predecessor": [
+            7,
+			15,
+			23,
+			5,
+			13,
+			21
+		],
+        "test_unit": [
+            "1 99 a + 0",
+            "1 202",
+            "2 200 input2 20. 0",
+            "2 202",
+            "3 z 100 z z z z z 0",
+            "3 202",
+            "0"
+        ]
+    },
+    {
+        "test_num": 36,
+        "description": "任務1-3綜合防呆測試-3",
+        "hidden": false,
+        "predecessor": [
+            8,
+			16,
+			24,
+			34,
+			35
+		],
+        "test_unit": [
+            "1 102 0",
+            "1 202",
+            "2 299 0",
+            "2 203",
+            "3 input abc 0",
+            "3 203",
+            "0"
+        ]
+    }
+]

@@ -113,8 +113,22 @@ app.post('/testnum', async (req, res) => {
     tests.sort((a, b) => a.test_num - b.test_num);
 
     var test_info = await Promise.all(tests.map(async item => {
-        const result = await execute_collection.findOne({ filename: target_file, type: type, homework: homework, test_num: item.test_num });
-        const static_result = await static_execute_collection.findOne({ filename: target_file });
+        const resultKey = `result:${target_file}:${type}:${homework}:${item.test_num}`;
+        const staticResultKey = `static_result:${target_file}`;
+
+        let result = JSON.parse(await redis.get(resultKey));
+        let static_result = JSON.parse(await redis.get(staticResultKey));
+
+        if (!result) {
+            result = await execute_collection.findOne({ filename: target_file, type: type, homework: homework, test_num: item.test_num });
+            await redis.set(resultKey, JSON.stringify(result), 'EX', 60 * 60 * 24 * 7);
+        }
+
+        if (!static_result) {
+            static_result = await static_execute_collection.findOne({ filename: target_file });
+            await redis.set(staticResultKey, JSON.stringify(static_result), 'EX', 60 * 60 * 24 * 7);
+        }
+
         if (static_result === null || result === null) {
             return {
                 testnum: item.test_num,
@@ -124,6 +138,17 @@ app.post('/testnum', async (req, res) => {
                 percentage: 'NA',
                 execution_time: 'NA',
                 relative_time: 'NA',
+                type_list: []
+            }
+        } else if (result.state !== 'AC') {
+            return {
+                testnum: item.test_num,
+                tag: item.description,
+                studentid: document.upload_student,
+                state: 'Pending',
+                percentage: result.state,
+                execution_time: result.state,
+                relative_time: result.state,
                 type_list: []
             }
         }
@@ -241,7 +266,18 @@ app.post('/diff', async (req, res) => {
         const output_file = req.body.output_file; // item in diff_result
 
         const exec_collection = client.db('dal').collection('execute_log');
-        const result = await exec_collection.findOne({ filename: target_file, test_num: test_num }); // 從資料庫找出所有執行結果
+        const cacheKey = `exec_result:${target_file}:${test_num}`;
+
+        // 檢查 Redis 快取
+        let result = JSON.parse(await redis.get(cacheKey));
+
+        if (!result) {
+            // 如果快取中沒有結果，從資料庫查詢
+            result = await exec_collection.findOne({ filename: target_file, test_num: test_num });
+
+            // 將結果寫入 Redis 快取
+            await redis.set(cacheKey, JSON.stringify(result), 'EX', 60 * 60 * 24 * 7);
+        }
 
         // 處理編譯錯誤，相當於沒有結果
         if (result === null) {
@@ -286,7 +322,7 @@ app.post('/diff', async (req, res) => {
 
         const diff_html = await diff2html(diff[0].diff_result);
 
-        html += `<h1 style=\"font-size: 30px;\"><li>${diff[0].item}:</li></h1><br>` + diff_html 
+        html += `<h1 style=\"font-size: 30px;\"><li>${diff[0].item}:</li></h1><br>` + diff_html
 
 
         var error_message = result.stderr;
@@ -449,6 +485,21 @@ app.post('/hw_upload_batch', async (req, res) => {
 
     const upload_batch = await upload_collection.find({ upload_id: upload_id }).toArray();
 
+    var current_upload_batch_statistic = await static_execute_collection.find({ upload_id: upload_id }).toArray();
+    current_upload_batch_statistic.sort((a, b) => a.avg_cpu_time - b.avg_cpu_time);
+
+    var rank = 1;
+    for (let i = 0; i < current_upload_batch_statistic.length; i++) {
+        if (current_upload_batch_statistic[i].avg_cpu_time < 0) {
+            current_upload_batch_statistic[i].rank = -1;
+        } else {
+            current_upload_batch_statistic[i].rank = rank;
+            rank++;
+        }
+    }
+
+    const rank_map = new Map(current_upload_batch_statistic.map(item => [item.filename, item.rank]));
+
     const batch_info = []
 
     for (const upload of upload_batch) {
@@ -463,6 +514,7 @@ app.post('/hw_upload_batch', async (req, res) => {
                 state_list: [],
                 result: 'NA',
                 level: 'NA',
+                avg_time: 'NA'
             });
         } else {
             batch_info.push({
@@ -474,6 +526,7 @@ app.post('/hw_upload_batch', async (req, res) => {
                 state_list: result.all_state,
                 result: result.avg_error_ratio.toFixed(3),
                 level: result.level,
+                avg_time: result.avg_cpu_time.toFixed(2) + ' T/DEMO, Rank: ' + rank_map.get(upload.filename).toString()
             });
         }
 
@@ -505,7 +558,7 @@ app.post('/upload_standard_answer', standard_answer_upload.array('files', 50), a
     const path_to_dir = path.join('answer_file', homeworkName);
     bin_regex = /(\.bin)$/;
     for (const file of req.files) {
-        if ( !bin_regex.test(file['originalname']) ) {
+        if (!bin_regex.test(file['originalname'])) {
             await transcode(file['path']);
         }
     }
@@ -685,6 +738,7 @@ app.listen(port, () => {
 const WebSocket = require('ws');
 const pty = require('node-pty');
 const { time } = require('console');
+const { string } = require('prop-types');
 
 async function prepare_env(filename) {
     const dependency_collection = client.db('dal').collection('dependance_file');

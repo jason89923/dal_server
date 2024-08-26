@@ -31,6 +31,8 @@ function regularize(text) {
         .replace(/ {2,}/g, ' ') // 將連續出現2個或以上的空格換成1個
         .replace(/\n{2,}/g, '\n') // 將連續出現2個或以上的換行換成1個
         .replace(/ \n/g, '\n') // 當空格和換行連在一起時，只保留換行
+        .replace(/\n /g, '\n') // 當換行和空格連在一起時，只保留換行
+        .replace(/ \n/g, '\n') // 當空格和換行連在一起時，只保留換行
         .toLowerCase(); // 將所有的英文字母轉換為小寫
 }
 
@@ -111,19 +113,21 @@ function getTermFrequencyMap(str) {
     }
   }
 
-async function cal_error_ratio(filename, stdout, ans, output_files, ans_files) {
-    var diff_num = 0;
-    var whole_text_len = 0;
-
+async function cal_error_ratio(filename, stdout, ans, output_files, ans_files, state) {
+    if (state !== 'AC') {
+        const error_data = JSON.stringify({ diff_num: -1 });
+        await statistic_redis.rpush(`error_len:${filename}`, error_data);
+        return -1;
+    }
+    
     // 去掉空白字元
     const std_stdout = stdout.replaceAll(/\s/g, '');
     const ans_stdout = ans.replaceAll(/\s/g, '');
+    
+    const all_similarity = []
 
     const diff_between_stdout_and_ans = getCosineSimilarity(std_stdout, ans_stdout) ;
-    // const diff_between_stdout_and_ans = levenshtein.levenshteinDistance(std_stdout, ans_stdout, true); // 計算編輯距離
-    // const diff_between_stdout_and_ans = levenshtein.get(std_stdout, ans_stdout); 
-    diff_num += diff_between_stdout_and_ans; // 將差異字元數相加
-    whole_text_len += ans_stdout.length; // 計算標準答案的總字元數
+    all_similarity.push(diff_between_stdout_and_ans * 100)
 
     // 先確認有沒有輸出檔案
     if (ans_files) {
@@ -133,20 +137,19 @@ async function cal_error_ratio(filename, stdout, ans, output_files, ans_files) {
                 const output_file = output_files.find(element => element.filename === ans_file.filename);
                 const std_output_file = output_file.content.replaceAll(/\s/g, '');
                 const ans_output_file = ans_file.content.replaceAll(/\s/g, '');
-                diff_num += getCosineSimilarity(std_output_file, ans_output_file); // 將差異字元數相加
-                // diff_num += 0//levenshtein.levenshteinDistance(std_output_file, ans_output_file, true); // 將差異字元數相加
-                whole_text_len += ans_output_file.length; // 計算標準答案的總字元數
+                const diff = getCosineSimilarity(std_output_file, ans_output_file);
+                all_similarity.push(diff * 100)
             }
-
             catch (err) {
                 console.log("Error: ", err);
             }
         }
     }
 
-    const data = JSON.stringify({ diff_num: diff_num, whole_text_len: whole_text_len });
+    const min_similarity = Math.min(...all_similarity)
+    const data = JSON.stringify({ diff_num: min_similarity });
     await statistic_redis.rpush(`error_len:${filename}`, data);
-    return (diff_num / whole_text_len) * 1000000;
+    return min_similarity ;
 }
 
 // 執行學生的程式
@@ -190,17 +193,16 @@ async function execute(filename, homework, type, compile_folder = 'compiled', ex
         await new Promise((resolve, reject) => {
             const timeout = Math.max((command.real_time / 1000) * parseInt(process.env.TIME_LIMIT_MULTIPLY, 10), parseInt(process.env.TIME_LIMIT, 10));
             console.log('Timestamp: ' + new Date().toISOString() + ' start execute ' + execute_path + ' in case ' + command.test_num + ' with timeout ' + timeout + 's');
-            exec(`cd ${execute_path} && timeout ${timeout}s firejail --quiet /bin/bash -c "{ time ./program < in.txt; } 2> time.txt"`, { maxBuffer: 200 * 1024 * parseInt(process.env.MAX_BUFFER_SIZE_MULTIPLY) }, async (error, stdout, stderr) => {
+            exec(`cd ${execute_path} && timeout ${timeout}s firejail --quiet /bin/bash -c "ulimit -s 16384 && { time ./program < in.txt; } 2> time.txt"`, { maxBuffer: 200 * 1024 * parseInt(process.env.MAX_BUFFER_SIZE_MULTIPLY) }, async (error, stdout, stderr) => {
                 console.log('Timestamp: ' + new Date().toISOString() + ' finished execute ' + execute_path + ' in case ' + command.test_num + ' with timeout ' + timeout + 's');
                 let state = 'AC';
                 if (error) {
+                    stdout = ""; // 只要發生錯誤就將stdout清空
                     if (error.code === 124) {
                         // 遇到無窮迴圈或timeout
                         state = 'TLE';
-                        stdout = "";
                     } else if (error.code === "ERR_CHILD_PROCESS_STDIO_MAXBUFFER") {
-                        state = 'Output Limit Exceeded';
-                        stdout = "";
+                        state = 'OLE';
                     } else {
                         // 其他錯誤
                         state = 'RE';
@@ -216,8 +218,8 @@ async function execute(filename, homework, type, compile_folder = 'compiled', ex
                 // 如果有寫檔的規定
                 if (command.generated_files) {
                     for (const generated_file of command.generated_files) {
-                        if (state === 'TLE') {
-                            output_file.push({ filename: generated_file.filename, content: 'TLE' });
+                        if (state !== 'AC') {
+                            output_file.push({ filename: generated_file.filename, content: state });
                             diff_result_list.push({ item: generated_file.filename, diff: -1 });
                             continue;
                         }
@@ -240,10 +242,10 @@ async function execute(filename, homework, type, compile_folder = 'compiled', ex
                     }
                 }
 
-                // 解析time.txt
-                const time_txt = await fs.promises.readFile(path.join(execute_path, 'time.txt'), 'utf-8');
-
+                
                 try {
+                    // 解析time.txt
+                    const time_txt = await fs.promises.readFile(path.join(execute_path, 'time.txt'), 'utf-8');
                     const regex = /real\s*(\d+m\d+\.\d+s)\nuser\s*(\d+m\d+\.\d+s)\nsys\s*(\d+m\d+\.\d+s)/;
                     const match = time_txt.match(regex);
                     var real_time = to_ms(match[1]);
@@ -259,13 +261,14 @@ async function execute(filename, homework, type, compile_folder = 'compiled', ex
                 await statistic_redis.rpush(`cpu_time:${filename}`, time_usage);
 
                 // 計算錯誤率
-                const error_ratio = await cal_error_ratio(filename, stdout, command.stdout, output_file, command.generated_files);
+                const error_ratio = await cal_error_ratio(filename, stdout, command.stdout, output_file, command.generated_files, state);
 
                 // 紀錄這個test case的執行狀態
                 const execute_state = JSON.stringify({ test_num: parseInt(command.test_num), state: state });
                 await statistic_redis.rpush(`execute_state:${filename}`, execute_state);
 
                 try {
+
                     await execute_collection.insertOne({
                         uploadTime: new Date().toLocaleString("en-US", { timeZone: "Asia/Taipei" }),
                         filename: filename,
@@ -318,22 +321,29 @@ async function execute(filename, homework, type, compile_folder = 'compiled', ex
                     let teacher_time = 0;
                     (await statistic_redis.lrange(`cpu_time:${filename}`, 0, -1)).forEach((time) => {
                         const time_obj = JSON.parse(time);
-                        student_time += time_obj.student;
-                        teacher_time += time_obj.teacher;
+                        if (time_obj.student > 0) {
+                            student_time += time_obj.student;
+                            teacher_time += time_obj.teacher;
+                        }
                     });
 
-                    const average_cpu_time = student_time / teacher_time;
+                    if (teacher_time === 0) {
+                        var average_cpu_time = -999; // 一個都沒有執行成功
+                    } else {
+                        var average_cpu_time = student_time / teacher_time;
+                    }
 
-                    let total_diff_num = 0;
-                    let total_whole_text_len = 0;
-
+                    var min_similarity = 999;
                     (await statistic_redis.lrange(`error_len:${filename}`, 0, -1)).forEach((error) => {
                         const error_obj = JSON.parse(error);
-                        total_diff_num += error_obj.diff_num;
-                        total_whole_text_len += error_obj.whole_text_len;
+                        if (error_obj.diff_num >= 0 && min_similarity > error_obj.diff_num) {
+                            min_similarity = error_obj.diff_num;
+                        }
                     });
 
-                    const avg_error_ratio = ( total_diff_num / total_whole_text_len ) * 1000000;
+                    if (min_similarity === 999) {
+                        min_similarity = -1;
+                    }
 
                     const all_state = (await statistic_redis.lrange(`execute_state:${filename}`, 0, -1))
                         .sort((a, b) => JSON.parse(a).test_num - JSON.parse(b).test_num)
@@ -354,7 +364,7 @@ async function execute(filename, homework, type, compile_folder = 'compiled', ex
                         upload_id: upload_id,
                         type: type,
                         avg_cpu_time: average_cpu_time,
-                        avg_error_ratio: avg_error_ratio,
+                        avg_error_ratio: min_similarity,
                         all_state: all_state,
                         level: level
                     });
