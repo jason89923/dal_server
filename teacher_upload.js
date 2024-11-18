@@ -52,7 +52,7 @@ async function read_and_upload_command(dir, homework_name) {
                 await collection.updateOne({ homework: homework_name, type: filenameWithoutExtension.split('_')[1], test_num: item.test_num.toString(), description: item.description }, { $set: { content: test_unit, test_unit_object: JSON.stringify(item.test_unit) } }, { upsert: true });
                 if (item.predecessor !== undefined) {
                     for (const predecessor of item.predecessor) {
-                        await collection.updateOne({ homework: homework_name, type: filenameWithoutExtension.split('_')[1], test_num: predecessor.toString() }, { $push: {relation_edge: item.test_num.toString()} });
+                        await collection.updateOne({ homework: homework_name, type: filenameWithoutExtension.split('_')[1], test_num: predecessor.toString() }, { $push: { relation_edge: item.test_num.toString() } });
                     }
                 }
             }
@@ -133,6 +133,8 @@ async function execute(input_dir, homework_name) {
                     // 執行程式
                     console.log('Timestamp: ' + new Date().toISOString() + ' cd ' + path.join('execute', current_execute_folder) + ' && timeout 300s firejail --quiet /bin/bash -c "{ time ./program < in.txt; } 2> time.txt"');
                     exec('cd ' + path.join('execute', current_execute_folder) + ' && timeout 300s firejail --quiet /bin/bash -c "ulimit -s 16384 && { time ./program < in.txt; } 2> time.txt"', { maxBuffer: 10240 * 1024 }, async (error, stdout, stderr) => {
+                        stdout = stdout.trim();
+                        stderr = stderr.trim();
                         if (error) {
                             console.error('test num ' + test_num + ' error: ' + error.message + ' - Timestamp: ' + new Date().toISOString());
                             // 刪除資料夾

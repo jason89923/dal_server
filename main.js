@@ -12,6 +12,7 @@ const uuid = require('uuid');
 require('dotenv').config();
 const archiver = require('archiver');
 const levenshtein = require('fast-levenshtein');
+const mysql = require('mysql2/promise');
 
 const teacher_upload = require('./teacher_upload');
 
@@ -26,6 +27,7 @@ const dmp = new diff_match_patch();
 
 const Redis = require('ioredis');
 const redis = new Redis(process.env.REDIS_URI);
+const redis2 = new Redis(process.env.REDIS_URI, { db: 2 });
 
 const hljs = require('highlight.js');
 
@@ -51,6 +53,25 @@ if (remove_all) {
 rm('execute')
 
 const client = new MongoClient(process.env.MONGODB_URI);
+
+// 創建一個連接池
+// const pool = mysql.createPool({
+//     host: process.env.MYSQL_HOST, // MySQL 服務器的主機名
+//     user: process.env.MYSQL_USER,      // MySQL 用戶名
+//     password: process.env.MYSQL_PASSWORD, // MySQL 密碼
+//     database: process.env.MYSQL_DATABASE // 要連接的數據庫名稱
+// });
+
+async function get_sql_connection() {
+    const connection = await mysql.createConnection({
+        host: process.env.MYSQL_HOST,
+        user: process.env.MYSQL_USER,
+        password: process.env.MYSQL_PASSWORD,
+        database: process.env.MYSQL_DATABASE
+    });
+
+    return connection;
+}
 
 const app = express();
 
@@ -91,82 +112,163 @@ app.get('/auth', (req, res) => {
     res.send(token);
 });
 
+
+const TTL = 3 * 60 * 60 * 1000; // 三小時的毫秒數
+const chat_server_state = new Map();
+const chat_user_map = new Map();
+
+app.post('/chat_url', async (req, res) => {
+    const user_id = req.body.user_id;
+    const currentTime = Date.now();
+
+    // 確認使用者是否已經有伺服器
+    if (chat_user_map.has(user_id)) {
+        const { server, assignedTime } = chat_user_map.get(user_id);
+
+        // 檢查是否已經使用超過三小時
+        if (currentTime - assignedTime < TTL) {
+            res.send(server);
+            return;
+        } else {
+            chat_user_map.delete(user_id);
+            chat_server_state.set(server, chat_server_state.get(server) - 1);
+        }
+    }
+
+    // 確認可用的伺服器清單
+    const all_server = await redis2.lrange('chat_URL', 0, -1);
+
+    // 確認是否所有伺服器都在 chat_server_state 中
+    for (const server of all_server) {
+        if (!chat_server_state.has(server)) {
+            chat_server_state.set(server, 0);
+        }
+    }
+
+    // 找到最少人數的伺服器
+    let min_server = all_server[0];
+    let min = chat_server_state.get(min_server);
+
+    for (let i = 1; i < all_server.length; i++) {
+        const server = all_server[i];
+        const server_state = chat_server_state.get(server);
+        if (server_state < min) {
+            min = server_state;
+            min_server = server;
+        }
+    }
+
+    // 更新伺服器人數
+    chat_server_state.set(min_server, min + 1);
+
+    // 更新使用者伺服器和分配時間
+    chat_user_map.set(user_id, { server: min_server, assignedTime: currentTime });
+
+    res.send(min_server);
+});
+
+app.post('/original_code', async (req, res) => {
+    const target_file = req.body.filename;
+    try {
+        const safePath = path.resolve('uploads', target_file);
+        const data = await fs.promises.readFile(safePath);
+        res.send(data);
+    } catch (err) {
+        console.log(err);
+        res.send(err.message);
+    }
+});
+
 app.post('/testnum', async (req, res) => {
     const target_file = req.body.target_file;
 
     const upload_collection = client.db('dal').collection('upload_log');
     const command_collection = client.db('dal').collection('command_file');
-    const execute_collection = client.db('dal').collection('execute_log');
-    const static_execute_collection = client.db('dal').collection('static_execute_log');
-    // 找到所有的test_num
-    const document = await upload_collection.findOne({ filename: target_file });
+    let connection;
+    try {
+        connection = await get_sql_connection();
 
-    if (document === null) {
-        res.send([]);
-        return;
+        // 找到指定的文件資料
+        const document = await upload_collection.findOne({ filename: target_file });
+        if (document === null) {
+            res.send([]);
+            return;
+        }
+
+        const type = document.type;
+        const homework = document.homework;
+        const tests = await command_collection.find({ type: type, homework: homework }).toArray();
+
+        // 將測試根據 test_num 排序
+        tests.sort((a, b) => a.test_num - b.test_num);
+
+        static_result = (await connection.query('SELECT\
+                                            AVG(cpu_time) AS `AVG(cpu_time)`,\
+                                            AVG(relative_time) AS `AVG(relative_time)`,\
+                                            MIN(evaluation_index) AS `MIN(evaluation_index)`,\
+                                            CASE\
+                                                WHEN SUM(CASE WHEN state = \'AC\' THEN 1 ELSE 0 END) = COUNT(*) THEN 3\
+                                                WHEN SUM(CASE WHEN state = \'AC\' THEN 1 ELSE 0 END) > 0 THEN 2\
+                                                WHEN SUM(CASE WHEN state = \'CE\' THEN 1 ELSE 0 END) = COUNT(*) THEN 0\
+                                                ELSE 1\
+                                            END AS `level`\
+                                            FROM execution_log WHERE filename = ? ;', [target_file]))[0];
+
+
+        const test_info = await Promise.all(tests.map(async (item, idx) => {
+            let execute_result = (await connection.query('SELECT * FROM execution_log WHERE filename = ? and test_num = ?', [target_file, item.test_num]))[0][0];
+            const output_stream_type = (await connection.query('SELECT DISTINCT stream FROM output_stream WHERE execution_log_id = ? AND stream NOT LIKE ? AND stream != \'stderr\'', [execute_result?.id, '%_ans']))[0];
+            const type_list = output_stream_type.map(streamObj => streamObj.stream);
+            if (!execute_result) {
+                return {
+                    testnum: item.test_num,
+                    tag: item.description,
+                    studentid: document.upload_student,
+                    state: 'Pending',
+                    percentage: 'NA',
+                    execution_time: 'NA',
+                    relative_time: 'NA',
+                    type_list: [],
+                    status: 'NA'
+                };
+            } else {
+                if (execute_result.state !== 'AC' && execute_result.state !== 'WA' && execute_result.state !== 'PE') {
+                    return {
+                        testnum: item.test_num,
+                        tag: item.description,
+                        studentid: document.upload_student,
+                        state: 'Pending',
+                        percentage: execute_result.state,
+                        execution_time: execute_result.state,
+                        relative_time: execute_result.state,
+                        type_list: [],
+                        status: execute_result.state
+                    };
+                } else {
+                    return {
+                        testnum: item.test_num,
+                        tag: item.description,
+                        studentid: document.upload_student,
+                        state: 'Done',
+                        percentage: execute_result.evaluation_index,
+                        execution_time: execute_result.cpu_time,
+                        relative_time: execute_result.relative_time,
+                        type_list: type_list,
+                        status: execute_result.state
+                    };
+                }
+            }
+        }));
+
+        res.send(test_info);
+    } catch (err) {
+        console.error(err);
+        res.status(500).send('Internal Server Error');
+    } finally {
+        await connection.end();; // 保證在無論如何情況下都釋放連接
     }
-
-    const type = document.type;
-    const homework = document.homework;
-    const tests = await command_collection.find({ type: type, homework: homework }).toArray();
-
-    tests.sort((a, b) => a.test_num - b.test_num);
-
-    var test_info = await Promise.all(tests.map(async item => {
-        const resultKey = `result:${target_file}:${type}:${homework}:${item.test_num}`;
-        const staticResultKey = `static_result:${target_file}`;
-
-        let result = JSON.parse(await redis.get(resultKey));
-        let static_result = JSON.parse(await redis.get(staticResultKey));
-
-        if (!result) {
-            result = await execute_collection.findOne({ filename: target_file, type: type, homework: homework, test_num: item.test_num });
-            await redis.set(resultKey, JSON.stringify(result), 'EX', 60 * 60 * 24 * 7);
-        }
-
-        if (!static_result) {
-            static_result = await static_execute_collection.findOne({ filename: target_file });
-            await redis.set(staticResultKey, JSON.stringify(static_result), 'EX', 60 * 60 * 24 * 7);
-        }
-
-        if (static_result === null || result === null) {
-            return {
-                testnum: item.test_num,
-                tag: item.description,
-                studentid: document.upload_student,
-                state: 'Pending',
-                percentage: 'NA',
-                execution_time: 'NA',
-                relative_time: 'NA',
-                type_list: []
-            }
-        } else if (result.state !== 'AC') {
-            return {
-                testnum: item.test_num,
-                tag: item.description,
-                studentid: document.upload_student,
-                state: 'Pending',
-                percentage: result.state,
-                execution_time: result.state,
-                relative_time: result.state,
-                type_list: []
-            }
-        }
-        return {
-            testnum: item.test_num,
-            tag: item.description,
-            studentid: document.upload_student,
-            state: 'Done',
-            percentage: result.error_ratio === undefined ? -1 : result.error_ratio.toFixed(3),
-            execution_time: result.cpu_time === undefined ? -1 : result.cpu_time.toFixed(3),
-            relative_time: result.relative_time === undefined ? -1 : result.relative_time.toFixed(3),
-            type_list: ['stdout', ...result.output_file.map(file => file.filename)]
-        }
-    }));
-
-    res.send(test_info);
-
 });
+
 
 
 app.post('/testinfo', async (req, res) => {
@@ -263,80 +365,116 @@ app.post('/diff', async (req, res) => {
     try {
         const target_file = req.body.target_file; // filename
         const test_num = req.body.testnum.toString(); // test_num
-        const output_file = req.body.output_file; // item in diff_result
+        const output_file = req.body.output_file; // output_file的名稱 ( stdout, ~.txt, ~.bin )
 
-        const exec_collection = client.db('dal').collection('execute_log');
+        const connection = await get_sql_connection();
+        // const exec_collection = client.db('dal').collection('execute_log');
         const cacheKey = `exec_result:${target_file}:${test_num}`;
 
-        // 檢查 Redis 快取
-        let result = JSON.parse(await redis.get(cacheKey));
+        // // 檢查 Redis 快取
+        // let result = JSON.parse(await redis.get(cacheKey));
 
-        if (!result) {
-            // 如果快取中沒有結果，從資料庫查詢
-            result = await exec_collection.findOne({ filename: target_file, test_num: test_num });
+        // if (!result) {   
+        //     // result = await exec_collection.findOne({ filename: target_file, test_num: test_num });
 
-            // 將結果寫入 Redis 快取
-            await redis.set(cacheKey, JSON.stringify(result), 'EX', 60 * 60 * 24 * 7);
-        }
+        //     // 將結果寫入 Redis 快取
+        //     await redis.set(cacheKey, JSON.stringify(result), 'EX', 60 * 60 * 24 * 7);
+        // }
+
+        const [results] = await connection.query(`
+            SELECT 
+                os1.content AS std_content, 
+                os2.content AS ans_content,
+                os3.content AS std_err_content,
+                el.state AS state
+            FROM 
+                execution_log el
+            LEFT JOIN 
+                output_stream os1 ON el.id = os1.execution_log_id AND os1.stream = ?
+            LEFT JOIN 
+                output_stream os2 ON el.id = os2.execution_log_id AND os2.stream = ?
+            LEFT JOIN 
+                output_stream os3 ON el.id = os3.execution_log_id AND os3.stream = ?
+            WHERE 
+                el.filename = ? AND el.test_num = ?
+        `, [output_file, `${output_file}_ans`, `${output_file}_err`, target_file, test_num]);
+
+        await connection.end();
 
         // 處理編譯錯誤，相當於沒有結果
-        if (result === null) {
+        if (results === null) {
             const compiled_collection = client.db('dal').collection('compiled_log');
             const compiled_result = await compiled_collection.findOne({ filename: target_file });    // 從資料庫找出編譯結果
             const error_message = compiled_result.message;
-            const result_html = hljs.highlight(error_message, { language: 'bash' }).value;
-            const style = '<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/10.7.2/styles/vs2015.min.css">';
-            const responsiveMeta = '<meta name="viewport" content="width=device-width, initial-scale=1.0">';
-            const responsiveStyle = `
-            <style>
-                body {
-                    margin: 0;
-                    padding: 20px;
-                    font-family: Arial, sans-serif;
-                }
-                pre {
-                    white-space: pre-wrap;       /* Since CSS 2.1 */
-                    white-space: -moz-pre-wrap;  /* Mozilla, since 1999 */
-                    white-space: -pre-wrap;      /* Opera 4-6 */
-                    white-space: -o-pre-wrap;    /* Opera 7 */
-                    word-wrap: break-word;       /* Internet Explorer 5.5+ */
-                }
-                @media (max-width: 600px) {
-                    body {
-                        padding: 10px;
-                    }
-                }
-            </style>
-        `;
-            const html = `<html><head>${responsiveMeta}${style}${responsiveStyle}</head><body><pre><code>${result_html}</code></pre></body></html>`;
-            res.send(html);
+            const content = {
+                student_output: "",
+                answer: "",
+                error_message: error_message
+            };
+            //     const result_html = hljs.highlight(error_message, { language: 'bash' }).value;
+            //     const style = '<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/10.7.2/styles/vs2015.min.css">';
+            //     const responsiveMeta = '<meta name="viewport" content="width=device-width, initial-scale=1.0">';
+            //     const responsiveStyle = `
+            //     <style>
+            //         body {
+            //             margin: 0;
+            //             padding: 20px;
+            //             font-family: Arial, sans-serif;
+            //         }
+            //         pre {
+            //             white-space: pre-wrap;       /* Since CSS 2.1 */
+            //             white-space: -moz-pre-wrap;  /* Mozilla, since 1999 */
+            //             white-space: -pre-wrap;      /* Opera 4-6 */
+            //             white-space: -o-pre-wrap;    /* Opera 7 */
+            //             word-wrap: break-word;       /* Internet Explorer 5.5+ */
+            //         }
+            //         @media (max-width: 600px) {
+            //             body {
+            //                 padding: 10px;
+            //             }
+            //         }
+            //     </style>
+            // `;
+            //     const html = `<html><head>${responsiveMeta}${style}${responsiveStyle}</head><body><pre><code>${result_html}</code></pre></body></html>`;
+            //     res.send(html);
+            res.send(content);
+
             return;
         }
 
-        var html = "";
-        const diff = result.diff_result.map(item => {
-            if (item.item === output_file) {
-                return item;
-            }
-        }).filter(item => item !== undefined);
+        // var html = "";
+        // const diff = result.diff_result.map(item => {
+        //     if (item.item === output_file) {
+        //         return item;
+        //     }
+        // }).filter(item => item !== undefined);
 
-        const diff_html = await diff2html(diff[0].diff_result);
+        // const diff_html = await diff2html(diff[0].diff_result);
 
-        html += `<h1 style=\"font-size: 30px;\"><li>${diff[0].item}:</li></h1><br>` + diff_html
+        // html += `<h1 style=\"font-size: 30px;\"><li>${diff[0].item}:</li></h1><br>` + diff_html
+        const output = results[0].std_content;
+        const ans = results[0].ans_content;
+        const error = results[0].std_err_content;
+        const state = results[0].state;
 
+        var error_message = error;
 
-        var error_message = result.stderr;
-
-        if (result.state === 'TLE') {
+        if (state === 'TLE') {
             error_message = "time limit exceeded";
         } // else if()
 
 
-        const error_message_html = hljs.highlight(error_message, { language: 'bash' }).value;
-        const style = '<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/10.7.2/styles/vs2015.min.css">';
-        html = `<html><head>${style}</head>` + html + `<pre><code>${error_message_html}</code></pre>`;
+        // const error_message_html = hljs.highlight(error_message, { language: 'bash' }).value;
+        // const style = '<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/10.7.2/styles/vs2015.min.css">';
+        // html = `<html><head>${style}</head>` + html + `<pre><code>${error_message_html}</code></pre>`;
 
-        res.send(html);
+        const content = {
+            student_output: output,
+            answer: ans,
+            error_message: error
+        }
+
+        res.send(content);
         return;
     } catch (err) {
         res.send(err.message);

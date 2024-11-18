@@ -9,6 +9,7 @@ import fs from 'fs';
 import pLimit from 'p-limit';
 // import levenshtein from 'fast-levenshtein';
 import { createRequire } from 'module';
+import mysql from 'mysql2/promise';
 const require = createRequire(import.meta.url);
 const levenshtein = require('/home/dal/dal-project/server/levenshtein-addon/build/Release/levenshtein');
 
@@ -19,6 +20,24 @@ const client = new MongoClient(process.env.MONGODB_URI);
 const redis = new Redis(process.env.REDIS_URI);
 const statistic_redis = new Redis(process.env.REDIS_URI, { db: 1 });
 
+// 創建一個連接池
+// const pool = mysql.createPool({
+//     host: process.env.MYSQL_HOST, // MySQL 服務器的主機名
+//     user: process.env.MYSQL_USER,      // MySQL 用戶名
+//     password: process.env.MYSQL_PASSWORD, // MySQL 密碼
+//     database: process.env.MYSQL_DATABASE // 要連接的數據庫名稱
+// });
+
+async function get_sql_connection() {
+    const connection = await mysql.createConnection({
+        host: process.env.MYSQL_HOST,
+        user: process.env.MYSQL_USER,
+        password: process.env.MYSQL_PASSWORD,
+        database: process.env.MYSQL_DATABASE
+    });
+
+    return connection;
+}
 
 const channel = process.env.EXECUTE_CHANNEL; // 設定要訂閱的頻道
 redis.subscribe(channel); // 訂閱頻道
@@ -33,7 +52,15 @@ function regularize(text) {
         .replace(/ \n/g, '\n') // 當空格和換行連在一起時，只保留換行
         .replace(/\n /g, '\n') // 當換行和空格連在一起時，只保留換行
         .replace(/ \n/g, '\n') // 當空格和換行連在一起時，只保留換行
-        .toLowerCase(); // 將所有的英文字母轉換為小寫
+        .toLowerCase() // 將所有的英文字母轉換為小寫
+        .trim(); // 移除頭尾的空白字元
+}
+
+function eliminate_uncertainty(text) {
+    return text.trim()
+        .replace(/\s+/g, ''); // 移除所有的空白字元
+        //.replace(/(?<=L \= )\d+?(?=\n)/g, '此處不檢查')
+        //.replace(/(?<=T \= )\d+(\.\d+)?(?= ms)/g, '此處不檢查')
 }
 
 function cal_diff(output, ans) {
@@ -75,26 +102,26 @@ function getTermFrequencyMap(str) {
         termFrequency[word] = (termFrequency[word] || 0) + 1;
     });
     return termFrequency;
-  }
-  
-  function addKeysToDictionary(dict, keys) {
+}
+
+function addKeysToDictionary(dict, keys) {
     keys.forEach(key => {
         dict[key] = true;
     });
-  }
-  
-  function getCosineSimilarity(strA, strB) {
+}
+
+function getCosineSimilarity(strA, strB) {
     const termFrequencyA = getTermFrequencyMap(strA);
     const termFrequencyB = getTermFrequencyMap(strB);
-  
+
     const dict = {};
     addKeysToDictionary(dict, Object.keys(termFrequencyA));
     addKeysToDictionary(dict, Object.keys(termFrequencyB));
-  
+
     let dotProduct = 0;
     let magnitudeA = 0;
     let magnitudeB = 0;
-  
+
     Object.keys(dict).forEach(key => {
         const termA = termFrequencyA[key] || 0;
         const termB = termFrequencyB[key] || 0;
@@ -102,43 +129,47 @@ function getTermFrequencyMap(str) {
         magnitudeA += termA * termA;
         magnitudeB += termB * termB;
     });
-  
+
     magnitudeA = Math.sqrt(magnitudeA);
     magnitudeB = Math.sqrt(magnitudeB);
-  
+
     if (magnitudeA && magnitudeB) {
         return dotProduct / (magnitudeA * magnitudeB);
     } else {
         return 0;
     }
-  }
+}
 
-async function cal_error_ratio(filename, stdout, ans, output_files, ans_files, state) {
-    if (state !== 'AC') {
+async function compare_file(filename, output_files, ans_files, state) {
+    if (state !== 'AC' && state !== 'WA' && state !== 'PE') {
         const error_data = JSON.stringify({ diff_num: -1 });
         await statistic_redis.rpush(`error_len:${filename}`, error_data);
-        return -1;
+        return state;
     }
-    
-    // 去掉空白字元
-    const std_stdout = stdout.replaceAll(/\s/g, '');
-    const ans_stdout = ans.replaceAll(/\s/g, '');
-    
-    const all_similarity = []
 
-    const diff_between_stdout_and_ans = getCosineSimilarity(std_stdout, ans_stdout) ;
-    all_similarity.push(diff_between_stdout_and_ans * 100)
 
+    let file_state = state;
     // 先確認有沒有輸出檔案
     if (ans_files) {
         for (const ans_file of ans_files) {
             try {
                 // 找到相同檔名的檔案
                 const output_file = output_files.find(element => element.filename === ans_file.filename);
-                const std_output_file = output_file.content.replaceAll(/\s/g, '');
-                const ans_output_file = ans_file.content.replaceAll(/\s/g, '');
-                const diff = getCosineSimilarity(std_output_file, ans_output_file);
-                all_similarity.push(diff * 100)
+                const std_output_file = output_file.content.replace(/\r\n/g, '\n').replace(/\r/g, '\n').trim();
+                const ans_output_file = ans_file.content.replace(/\r\n/g, '\n').replace(/\r/g, '\n').trim();
+                if ( std_output_file === ans_output_file) {
+                    file_state = 'AC';
+                } else {
+                    if ( std_output_file.replace(/\s+/g, '') === ans_output_file.replace(/\s+/g, '') ) {
+                        if (file_state !== 'WA') {
+                            file_state = 'PE';
+                        }
+                    }
+
+                    else {
+                        file_state = 'WA';
+                    }
+                }
             }
             catch (err) {
                 console.log("Error: ", err);
@@ -146,10 +177,11 @@ async function cal_error_ratio(filename, stdout, ans, output_files, ans_files, s
         }
     }
 
-    const min_similarity = Math.min(...all_similarity)
-    const data = JSON.stringify({ diff_num: min_similarity });
-    await statistic_redis.rpush(`error_len:${filename}`, data);
-    return min_similarity ;
+    return file_state;
+    // const min_similarity = Math.min(...all_similarity)
+    // const data = JSON.stringify({ diff_num: min_similarity });
+    // await statistic_redis.rpush(`error_len:${filename}`, data);
+    // return min_similarity;
 }
 
 // 執行學生的程式
@@ -159,8 +191,10 @@ async function execute(filename, homework, type, compile_folder = 'compiled', ex
     const dependency_collection = client.db('dal').collection('dependance_file');
     const upload_log_collection = client.db('dal').collection('upload_log');
     const compile_path = path.join(compile_folder, filename);
+    
 
-    const upload_id = (await upload_log_collection.findOne({ filename })).upload_id;
+    const { upload_id, upload_student } = (await upload_log_collection.findOne({ filename }));
+
 
     // 從資料庫中找出所有command
     const commands = await command_collection.find({ homework: homework, type: type }).toArray();
@@ -180,7 +214,7 @@ async function execute(filename, homework, type, compile_folder = 'compiled', ex
             } else {
                 await fs.promises.writeFile(path.join(execute_path, dependence.filename), dependence.content);
             }
-            
+
         }
 
         // 將同學的執行檔複製到ran下
@@ -193,9 +227,19 @@ async function execute(filename, homework, type, compile_folder = 'compiled', ex
         await new Promise((resolve, reject) => {
             const timeout = Math.max((command.real_time / 1000) * parseInt(process.env.TIME_LIMIT_MULTIPLY, 10), parseInt(process.env.TIME_LIMIT, 10));
             console.log('Timestamp: ' + new Date().toISOString() + ' start execute ' + execute_path + ' in case ' + command.test_num + ' with timeout ' + timeout + 's');
-            exec(`cd ${execute_path} && timeout ${timeout}s firejail --quiet /bin/bash -c "ulimit -s 16384 && { time ./program < in.txt; } 2> time.txt"`, { maxBuffer: 200 * 1024 * parseInt(process.env.MAX_BUFFER_SIZE_MULTIPLY) }, async (error, stdout, stderr) => {
+            exec(`cd ${execute_path} && timeout ${timeout}s firejail --quiet /bin/bash -c "ulimit -s 16384 && { time ./program < in.txt; } 2> time.txt"`, { maxBuffer: 10240 * 1024 * parseInt(process.env.MAX_BUFFER_SIZE_MULTIPLY) }, async (error, stdout, stderr) => {
                 console.log('Timestamp: ' + new Date().toISOString() + ' finished execute ' + execute_path + ' in case ' + command.test_num + ' with timeout ' + timeout + 's');
-                let state = 'AC';
+                stdout = stdout.trim();
+                stderr = stderr.trim();
+                let state;
+                if (eliminate_uncertainty(stdout) === eliminate_uncertainty(command.stdout)) {
+                    state = 'AC';
+                } else if (regularize(eliminate_uncertainty(stdout)) === regularize(eliminate_uncertainty(command.stdout))) {
+                    state = 'PE';
+                } else {
+                    state = 'WA';
+                }
+
                 if (error) {
                     stdout = ""; // 只要發生錯誤就將stdout清空
                     if (error.code === 124) {
@@ -216,9 +260,10 @@ async function execute(filename, homework, type, compile_folder = 'compiled', ex
 
                 let output_file = [];
                 // 如果有寫檔的規定
+                // 新增名為output_file的陣列，裡面放著所有的檔案名稱和內容
                 if (command.generated_files) {
                     for (const generated_file of command.generated_files) {
-                        if (state !== 'AC') {
+                        if (state !== 'AC' && state !== 'WA' && state !== 'PE') {
                             output_file.push({ filename: generated_file.filename, content: state });
                             diff_result_list.push({ item: generated_file.filename, diff: -1 });
                             continue;
@@ -242,7 +287,11 @@ async function execute(filename, homework, type, compile_folder = 'compiled', ex
                     }
                 }
 
-                
+
+                // 新增比對檔案功能，不需要計算cosine 比對output_file與command_generated_files
+                // 改為吃SQL的資料庫
+                // 拔掉cal_error_ratio
+
                 try {
                     // 解析time.txt
                     const time_txt = await fs.promises.readFile(path.join(execute_path, 'time.txt'), 'utf-8');
@@ -261,56 +310,134 @@ async function execute(filename, homework, type, compile_folder = 'compiled', ex
                 await statistic_redis.rpush(`cpu_time:${filename}`, time_usage);
 
                 // 計算錯誤率
-                const error_ratio = await cal_error_ratio(filename, stdout, command.stdout, output_file, command.generated_files, state);
+                const final_state = await compare_file(filename, output_file, command.generated_files, state);
 
                 // 紀錄這個test case的執行狀態
-                const execute_state = JSON.stringify({ test_num: parseInt(command.test_num), state: state });
+                const execute_state = JSON.stringify({ test_num: parseInt(command.test_num), state: final_state });
                 await statistic_redis.rpush(`execute_state:${filename}`, execute_state);
 
                 try {
+                    const connection = await get_sql_connection();
+                    
+                    const [executionLogResult] = await connection.query(
+                        'INSERT INTO execution_log (execute_time, student_id, filename, homework, type, state, test_num, cpu_time, relative_time, real_time, user_time, sys_time, evaluation_index) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+                        [
+                            new Date(new Date().toLocaleString('en-US', { timeZone: 'Asia/Taipei' })).toISOString().slice(0, 19).replace('T', ' '),
+                            upload_student,
+                            filename,
+                            homework,
+                            type,
+                            final_state,
+                            parseInt(command.test_num),
+                            user_time + sys_time,
+                            (user_time + sys_time) / command.cpu_time,
+                            real_time,
+                            user_time,
+                            sys_time,
+                            0
+                        ]
+                    );
 
-                    await execute_collection.insertOne({
-                        uploadTime: new Date().toLocaleString("en-US", { timeZone: "Asia/Taipei" }),
-                        filename: filename,
-                        homework: homework,
-                        type: type,
-                        state: state,
-                        cpu_time: user_time + sys_time,
-                        relative_time: (user_time + sys_time) / command.cpu_time,
-                        real_time: real_time,
-                        user_time: user_time,
-                        sys_time: sys_time,
-                        stdout: stdout,
-                        ans: command.stdout,
-                        ans_file: command.generated_files,
-                        output_file: output_file,
-                        stderr: stderr,
-                        test_num: command.test_num,
-                        diff_result: diff_result_list,
-                        error_ratio: error_ratio
-                    });
+                    const executionLogId = executionLogResult.insertId;
+
+                    // 將學生的stdout寫入資料庫
+                    await connection.query(
+                        'INSERT INTO output_stream (stream, content, execution_log_id) VALUES (?, ?, ?)',
+                        [
+                            "stdout",
+                            stdout,
+                            executionLogId
+                        ]
+                    );
+
+                    // 將標準答案寫入資料庫
+                    await connection.query(
+                        'INSERT INTO output_stream (stream, content, execution_log_id) VALUES (?, ?, ?)',
+                        [
+                            "stdout_ans",
+                            command.stdout,
+                            executionLogId
+                        ]
+                    );
+
+                    await connection.query(
+                        'INSERT INTO output_stream (stream, content, execution_log_id) VALUES (?, ?, ?)',
+                        [
+                            "stderr",
+                            stderr,
+                            executionLogId
+                        ]
+                    )
+
+                    if (command.generated_files) {
+                        // 將學生生成的檔案寫入資料庫
+                        for (const file of output_file) {
+                            await connection.query(
+                                'INSERT INTO output_stream (stream, content, execution_log_id) VALUES (?, ?, ?)',
+                                [
+                                    file.filename,
+                                    file.content,
+                                    executionLogId
+                                ]
+                            );
+                        }
+
+                        // 將標準答案生成的檔案寫入資料庫
+                        for (const generated_file of command.generated_files) {
+                            await connection.query(
+                                'INSERT INTO output_stream (stream, content, execution_log_id) VALUES (?, ?, ?)',
+                                [
+                                    `${generated_file.filename}_ans`,
+                                    generated_file.content,
+                                    executionLogId
+                                ]
+                            );
+                        }
+                    }
+
+                    await connection.end();
+                    // await execute_collection.insertOne({
+                    //     uploadTime: new Date().toLocaleString("en-US", { timeZone: "Asia/Taipei" }),
+                    //     filename: filename,
+                    //     homework: homework,
+                    //     type: type,
+                    //     state: state,
+                    //     cpu_time: user_time + sys_time,
+                    //     relative_time: (user_time + sys_time) / command.cpu_time,
+                    //     real_time: real_time,
+                    //     user_time: user_time,
+                    //     sys_time: sys_time,
+                    //     stdout: stdout,
+                    //     ans: command.stdout,
+                    //     ans_file: command.generated_files,
+                    //     output_file: output_file,
+                    //     stderr: stderr,
+                    //     test_num: command.test_num,
+                    //     diff_result: diff_result_list,
+                    //     error_ratio: error_ratio
+                    // });
                 } catch (err) {
                     console.log(err);
-                    await execute_collection.insertOne({
-                        uploadTime: new Date().toLocaleString("en-US", { timeZone: "Asia/Taipei" }),
-                        filename: filename,
-                        homework: homework,
-                        type: type,
-                        state: state,
-                        cpu_time: user_time + sys_time,
-                        relative_time: (user_time + sys_time) / command.cpu_time,
-                        real_time: real_time,
-                        user_time: user_time,
-                        sys_time: sys_time,
-                        stdout: stdout,
-                        ans: command.stdout,
-                        ans_file: command.generated_files,
-                        output_file: [],
-                        stderr: stderr,
-                        test_num: command.test_num,
-                        diff_result: [],
-                        error_ratio: error_ratio
-                    });
+                    // await execute_collection.insertOne({
+                    //     uploadTime: new Date().toLocaleString("en-US", { timeZone: "Asia/Taipei" }),
+                    //     filename: filename,
+                    //     homework: homework,
+                    //     type: type,
+                    //     state: state,
+                    //     cpu_time: user_time + sys_time,
+                    //     relative_time: (user_time + sys_time) / command.cpu_time,
+                    //     real_time: real_time,
+                    //     user_time: user_time,
+                    //     sys_time: sys_time,
+                    //     stdout: stdout,
+                    //     ans: command.stdout,
+                    //     ans_file: command.generated_files,
+                    //     output_file: [],
+                    //     stderr: stderr,
+                    //     test_num: command.test_num,
+                    //     diff_result: [],
+                    //     error_ratio: error_ratio
+                    // });
                 }
 
                 // 當所有test case都執行完畢，就開始統計執行結果
